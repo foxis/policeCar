@@ -1,12 +1,10 @@
-#include "LowPower.h"
-
-#define TIME_TURNOFF 30100
-#define TIME_SIREN_ON 1000
-#define TIME_STOP_ON 19000
-#define TIME_HEAD_OFF 20000
-#define TIME_STOP_OFF 21000
-#define TIME_SIREN_OFF 23000
-#define TIME_BLINKERS_OFF 30000
+#define TIME_TURNOFF 30100000L
+#define TIME_SIREN_ON 1000000L
+#define TIME_STOP_ON 19000000L
+#define TIME_HEAD_OFF 20000000L
+#define TIME_STOP_OFF 21000000L
+#define TIME_SIREN_OFF 23000000L
+#define TIME_BLINKERS_OFF 30000000L
 
 
 #define PIN_HEAD_L A0
@@ -21,24 +19,66 @@ long start_millis = 0;
 int state = 0;
 bool blinkers = false;
 bool siren = false;
+bool is_running = false;
+
+void wakeupInt()
+{
+}
+
+void sleep()
+{
+  is_running = false;
+  noTone(PIN_SPEAKER);
+  digitalWrite(PIN_SPEAKER, HIGH);
+  digitalWrite(PIN_STOP_L, LOW);
+  digitalWrite(PIN_STOP_R, LOW);
+  digitalWrite(PIN_HEAD_L, LOW);
+  digitalWrite(PIN_HEAD_R, LOW);
+  digitalWrite(PIN_BLINK_L, LOW);
+  digitalWrite(PIN_BLINK_R, LOW);
+  
+  //ENABLE SLEEP - this enables the sleep mode
+  SMCR |= (1 << 2); //power down mode
+  SMCR |= 1;//enable sleep
+  //BOD DISABLE - this must be called right before the __asm__ sleep instruction
+  MCUCR |= (3 << 5); //set both BODS and BODSE at the same time
+  MCUCR = (MCUCR & ~(1 << 5)) | (1 << 6); //then set the BODS bit and clear the BODSE bit at the same time
+  __asm__  __volatile__("sei");//in line assembler to go to sleep
+  __asm__  __volatile__("sleep");//in line assembler to go to sleep
+
+    start_millis = micros();
+    blinkers = false;
+    siren = false;
+    state = 0;
+    is_running = true;
+}
 
 void setup()
 {
-  pinMode(PIN_HEAD_L, OUTPUT);
-  pinMode(PIN_HEAD_R, OUTPUT);
-  pinMode(PIN_STOP_L, OUTPUT);
-  pinMode(PIN_STOP_R, OUTPUT);
-  pinMode(PIN_BLINK_L, OUTPUT);
-  pinMode(PIN_BLINK_R, OUTPUT);
-  pinMode(PIN_SPEAKER, OUTPUT);
+  for (int i = 0; i < 20; i++) 
+  {//set all pins LOW, to save power from floating pins
+    if (i != 2) //using this pin for interrupt input
+      pinMode(i, OUTPUT);
+    else
+    {
+      pinMode(i, INPUT);
+      digitalWrite(i, HIGH);
+    }
+  }
 
   digitalWrite(PIN_SPEAKER, HIGH);
+  attachInterrupt(0, wakeupInt, LOW);//interrupt for wakeup
 
-  start_millis = millis();
+  ADCSRA &= ~(1 << 7);
+
+  sleep();
 }
 
 long readVcc() 
 {
+  ADCSRA |= (1 << 7);
+  delay(2);
+
   // Read 1.1V reference against AVcc
   // set the reference to Vcc and the measurement to the internal 1.1V reference
   #if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
@@ -57,6 +97,9 @@ long readVcc()
   uint8_t high = ADCH; // unlocks both
  
   long result = (high<<8) | low;
+
+  //Disable ADC
+  ADCSRA &= ~(1 << 7);
  
   result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
   return result; // Vcc in millivolts
@@ -84,7 +127,7 @@ void do_blinkers(long now)
   if (!blinkers)
     return;
 
-  if (now - last_millis < 50)
+  if (now - last_millis < 50000)
     return;
 
   digitalWrite(sequence[state], state % 2);
@@ -132,7 +175,7 @@ void do_siren(long now)
   if (!siren)
     return;
 
-  if (now - last_millis < 1)
+  if (now - last_millis < 500)
     return;
 
   if (freq_delta == 1 && freq >= 1800)
@@ -143,7 +186,7 @@ void do_siren(long now)
   {
     freq_delta = 1;
     state++;
-    if (state > 2)
+    if (state > 4)
     {
       freq_delta = 0;
       state = 0;
@@ -151,19 +194,22 @@ void do_siren(long now)
   }
   else if (freq_delta == 0)
   {
-    if (now - last_millis < 5)
+    if (now - last_millis < 5000)
       return;
 
-    if ((state == 25 || state == 50) && now - last_millis < 50)
+    if ((state == 25 || state == 50 || state == 75) && now - last_millis < 75000)
       return;
 
     if (!(state % 2))
       tone(PIN_SPEAKER, 440, 10);
     else
+    {
       noTone(PIN_SPEAKER);
+      digitalWrite(PIN_SPEAKER, HIGH);
+    }
 
     state++;
-    if (state > 75)
+    if (state > 100)
     {
       freq_delta = 1;
       freq = 150;
@@ -181,8 +227,8 @@ void do_siren(long now)
 
 void loop() 
 {
-  long now = millis();
-  
+  long now = micros();
+
   // turn on stop and head lights
   if (state == 0)
   {
@@ -191,6 +237,7 @@ void loop()
     {
       do_lowbat();
       state = -1;
+      sleep();
       return;
     }
     
@@ -260,6 +307,6 @@ void loop()
   // go into a deep sleep
   if (now - start_millis > TIME_TURNOFF || state == -1)
   {
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+    sleep();
   }
 }
